@@ -1,0 +1,301 @@
+/* Fonts are self-hosted (not pulled from a CDN at runtime): this is a
+   locally-installed tool that may run during assessments on networks with
+   restricted or monitored egress, so startup shouldn't depend on reaching
+   the internet. Drop the two open-source font files into
+   src/assets/fonts/ (see README) — everything below degrades gracefully
+   to the system fallback stack until you do. */
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/src/assets/fonts/SpaceGrotesk-Variable.woff2") format("woff2");
+  font-weight: 300 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/src/assets/fonts/JetBrainsMono-Variable.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+:root {
+  /* Deliberately a cool navy-ink, not a flat near-black, and the accent is
+     a warm copper/amber rather than neon green or vermilion — both are
+     the two generic "hacker tool" / "AI tool" defaults called out in the
+     design brief. Status colors are desaturated; they carry information
+     (response class), not decoration. */
+  --bg-base: #0e1621;
+  --bg-surface: #16202c;
+  --bg-surface-2: #1d2a38;
+  --border: #2a3b4d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8da0b3;
+
+  --accent: #e8954a;
+  --accent-ink: #2a1a08;
+
+  --status-ok: #4fc38a;
+  --status-redirect: #e8954a;
+  --status-client: #6b7a8c;
+  --status-server: #e2607a;
+
+  --font-ui: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.app-titlebar__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+.app-titlebar h1 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.app-sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  gap: 12px;
+}
+
+.panel__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin: 0 0 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.field--row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.field-row {
+  display: flex;
+  gap: 10px;
+}
+.field-row .field {
+  flex: 1;
+}
+
+input,
+select,
+textarea {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--bg-surface-2);
+}
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.btn--primary:hover {
+  filter: brightness(1.08);
+}
+.btn--secondary {
+  width: 100%;
+}
+
+.wordlist-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.run-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.run-progress {
+  flex: 1;
+}
+.run-progress__bar {
+  height: 4px;
+  background: var(--bg-surface-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.run-progress__fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+.run-progress__stats {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.run-progress__error {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--status-server);
+}
+
+.results-table-wrap {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.results-table th {
+  text-align: left;
+  position: sticky;
+  top: 0;
+  background: var(--bg-surface);
+  padding: 8px 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.results-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.results-table tbody tr:hover {
+  background: var(--bg-surface);
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-badge--ok {
+  background: rgba(79, 195, 138, 0.15);
+  color: var(--status-ok);
+}
+.status-badge--redirect {
+  background: rgba(232, 149, 74, 0.15);
+  color: var(--status-redirect);
+}
+.status-badge--client {
+  background: rgba(107, 122, 140, 0.15);
+  color: var(--status-client);
+}
+.status-badge--server,
+.status-badge--error {
+  background: rgba(226, 96, 122, 0.15);
+  color: var(--status-server);
+}
+
+.empty-state {
+  padding: 40px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-progress__fill {
+    transition: none;
+  }
+}

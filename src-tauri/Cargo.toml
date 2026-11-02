@@ -1,0 +1,35 @@
+[package]
+name = "fuzzit"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight Windows fuzzer with a self-contained engine, inspired by ffuf."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+# rt-multi-thread: real parallelism across requests, not just concurrency on one thread.
+# macros/sync/time: #[tokio::main]-style entry points, Semaphore/mpsc, sleep() for the
+# optional per-request delay. We deliberately do NOT pull in tokio's "full" feature set —
+# every extra feature is extra compiled code in a binary we're trying to keep small.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# default-features = false + rustls-tls: avoids linking against the system OpenSSL/Schannel
+# stack. On Windows this removes a whole class of "works on my machine" build failures and
+# keeps the final binary self-contained.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "fuzzit"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"   # optimize for binary size over raw speed — the HTTP round-trip
+                   # dominates runtime cost, not local CPU work, so there's little to
+                   # gain from opt-level 3, but a lot to gain from a smaller .exe.
+lto = true
+strip = true
+codegen-units = 1
