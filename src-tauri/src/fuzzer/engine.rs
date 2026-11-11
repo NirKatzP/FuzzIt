@@ -27,6 +27,9 @@ pub struct FuzzProgress {
     pub total: usize,
     pub matches: usize,
     pub rps: f64,
+    /// Responses with status 429, filtered or not: the target asking the
+    /// scan to slow down.
+    pub rate_limited: usize,
 }
 
 /// How often buffered results and progress are handed to the callbacks. Each
@@ -124,6 +127,11 @@ where
         let method = method.clone();
         let semaphore = semaphore.clone();
         async move {
+            // Pacing lives here, in the one place requests are started, so it
+            // holds for the run as a whole rather than per concurrent slot.
+            let spacing = (config.rate_per_minute > 0)
+                .then(|| Duration::from_secs(60) / config.rate_per_minute);
+            let mut next_send = Instant::now();
             for word in wordlist.into_iter() {
                 if handle.is_cancelled() {
                     break;
@@ -131,6 +139,14 @@ where
                 let Ok(permit) = semaphore.clone().acquire_owned().await else {
                     break;
                 };
+                if let Some(spacing) = spacing {
+                    if !wait_until(next_send, &handle).await {
+                        break;
+                    }
+                    // From now, not from the slot's planned time: a slow
+                    // stretch must not bank credit for a burst afterwards.
+                    next_send = Instant::now() + spacing;
+                }
                 let client = client.clone();
                 let config = config.clone();
                 let method = method.clone();
@@ -216,9 +232,10 @@ where
 
     let mut done = 0usize;
     let mut matches = 0usize;
+    let mut rate_limited = 0usize;
     let mut pending = Vec::new();
     let mut reported_done = 0usize;
-    let mut flush = |pending: &mut Vec<FuzzResult>, done: usize, matches: usize| {
+    let mut flush = |pending: &mut Vec<FuzzResult>, done: usize, matches: usize, rate_limited: usize| {
         if !pending.is_empty() {
             on_results(std::mem::take(pending));
         }
@@ -230,6 +247,7 @@ where
                 total,
                 matches,
                 rps: done as f64 / elapsed,
+                rate_limited,
             });
         }
     };
@@ -242,6 +260,9 @@ where
             received = rx.recv() => match received {
                 Some(result) => {
                     done += 1;
+                    if result.status == 429 {
+                        rate_limited += 1;
+                    }
                     if filters.matches(&result) {
                         matches += 1;
                         pending.push(result);
@@ -249,12 +270,29 @@ where
                 }
                 None => break,
             },
-            _ = ticker.tick() => flush(&mut pending, done, matches),
+            _ = ticker.tick() => flush(&mut pending, done, matches, rate_limited),
         }
     }
-    flush(&mut pending, done, matches);
+    flush(&mut pending, done, matches, rate_limited);
 
     Ok(())
+}
+
+/// Sleeps until `deadline`, waking regularly so Stop takes effect promptly
+/// even when a low rate puts the next request a minute away. Returns false
+/// if the run was cancelled while waiting.
+async fn wait_until(deadline: Instant, handle: &FuzzHandle) -> bool {
+    const CHECK_EVERY: Duration = Duration::from_millis(100);
+    loop {
+        if handle.is_cancelled() {
+            return false;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        tokio::time::sleep((deadline - now).min(CHECK_EVERY)).await;
+    }
 }
 
 /// Turns a reqwest error into something the user can act on. reqwest's own
@@ -396,7 +434,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// Answers every request with a small 200, holding back any path that
-    /// contains "slow" for 800ms. Returns the server's base URL.
+    /// contains "slow" for 800ms and answering 429 to any containing
+    /// "limited". Returns the server's base URL.
     fn spawn_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -406,11 +445,18 @@ mod tests {
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 1024];
                     let n = stream.read(&mut buf).unwrap_or(0);
-                    if String::from_utf8_lossy(&buf[..n]).contains("slow") {
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    if request.contains("slow") {
                         std::thread::sleep(Duration::from_millis(800));
                     }
+                    let status = if request.contains("limited") {
+                        "429 Too Many Requests"
+                    } else {
+                        "200 OK"
+                    };
                     let _ = stream.write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                        format!("HTTP/1.1 {status}\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+                            .as_bytes(),
                     );
                 });
             }
@@ -419,9 +465,15 @@ mod tests {
     }
 
     /// Runs a scan and returns each batch's size and arrival time, plus every
-    /// progress update.
-    async fn scan(url: &str, words: Vec<String>) -> (Vec<(usize, Duration)>, Vec<FuzzProgress>) {
-        let config = serde_json::from_value(serde_json::json!({
+    /// progress update. A `rate_per_minute` of 0 leaves the field out, as an
+    /// older frontend would.
+    async fn scan(
+        url: &str,
+        words: Vec<String>,
+        rate_per_minute: u32,
+        handle: FuzzHandle,
+    ) -> (Vec<(usize, Duration)>, Vec<FuzzProgress>) {
+        let mut config = serde_json::json!({
             "url": format!("{url}/FUZZ"),
             "method": "GET",
             "headers": {},
@@ -430,8 +482,11 @@ mod tests {
             "timeout_ms": 5000,
             "follow_redirects": false,
             "delay_ms": 0,
-        }))
-        .unwrap();
+        });
+        if rate_per_minute > 0 {
+            config["rate_per_minute"] = rate_per_minute.into();
+        }
+        let config = serde_json::from_value(config).unwrap();
         let filters = serde_json::from_value(serde_json::json!({
             "exclude_status": [],
             "include_status": [],
@@ -448,7 +503,7 @@ mod tests {
             config,
             filters,
             words,
-            FuzzHandle::new(),
+            handle,
             {
                 let batches = batches.clone();
                 move |results: Vec<_>| batches.lock().unwrap().push((results.len(), start.elapsed()))
@@ -469,7 +524,7 @@ mod tests {
     async fn fast_scan_delivers_every_result_in_few_batches() {
         let url = spawn_server();
         let words: Vec<String> = (0..500).map(|i| format!("w{i}")).collect();
-        let (batches, progress) = scan(&url, words).await;
+        let (batches, progress) = scan(&url, words, 0, FuzzHandle::new()).await;
 
         assert_eq!(batches.iter().map(|b| b.0).sum::<usize>(), 500);
         assert!(batches.len() < 100, "{} batches", batches.len());
@@ -481,11 +536,52 @@ mod tests {
     #[tokio::test]
     async fn results_are_not_held_back_by_a_slow_request() {
         let url = spawn_server();
-        let (batches, _) = scan(&url, vec!["fast".into(), "slow".into()]).await;
+        let (batches, _) = scan(&url, vec!["fast".into(), "slow".into()], 0, FuzzHandle::new()).await;
 
         // The fast result must arrive on a timer tick, not when "slow" finishes.
         assert_eq!(batches.len(), 2, "{batches:?}");
         assert!(batches[0].1 < Duration::from_millis(500), "{batches:?}");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_spaces_requests_across_the_whole_run() {
+        let url = spawn_server();
+        let words: Vec<String> = (0..6).map(|i| format!("w{i}")).collect();
+        // 600/min is one request per 100ms, even with 20 slots free at once.
+        let start = Instant::now();
+        let (_, progress) = scan(&url, words, 600, FuzzHandle::new()).await;
+        let elapsed = start.elapsed();
+
+        assert_eq!(progress.last().unwrap().done, 6);
+        assert!(elapsed >= Duration::from_millis(480), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_run_waiting_on_the_rate_limit() {
+        let url = spawn_server();
+        let handle = FuzzHandle::new();
+        let stopper = handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stopper.cancel();
+        });
+        // 1/min: the second request is a minute away when Stop arrives.
+        let start = Instant::now();
+        let (_, progress) = scan(&url, vec!["a".into(), "b".into(), "c".into()], 1, handle).await;
+
+        assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
+        assert_eq!(progress.last().unwrap().done, 1);
+    }
+
+    #[tokio::test]
+    async fn counts_429_responses() {
+        let url = spawn_server();
+        let words = vec!["ok".into(), "limited1".into(), "limited2".into()];
+        let (_, progress) = scan(&url, words, 0, FuzzHandle::new()).await;
+
+        let last = progress.last().unwrap();
+        assert_eq!((last.done, last.rate_limited), (3, 2));
     }
 
     #[tokio::test]

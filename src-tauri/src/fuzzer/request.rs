@@ -18,6 +18,10 @@ pub struct FuzzConfig {
     pub follow_redirects: bool,
     /// Optional per-request delay in ms (politeness / rate limiting). 0 = off.
     pub delay_ms: u64,
+    /// Cap on requests sent per minute across the whole run, whatever the
+    /// concurrency or the target's response time. 0 = no cap.
+    #[serde(default)]
+    pub rate_per_minute: u32,
 }
 
 /// A request with FUZZ already substituted in every field that can carry it.

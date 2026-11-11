@@ -29,6 +29,11 @@ export function RunControls({
             ? `${progress.done}/${progress.total} · ${progress.matches} תוצאות · ${progress.rps.toFixed(1)} req/s`
             : "ממתין להפעלה"}
         </div>
+        {progress && progress.rate_limited > 0 && (
+          <div className="run-progress__error" role="status" dir="rtl">
+            {progress.rate_limited.toLocaleString()} תגובות 429 (יותר מדי בקשות). כדאי להוריד את הקצב.
+          </div>
+        )}
         {error && (
           <div className="run-progress__error" role="alert">
             {error}

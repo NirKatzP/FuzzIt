@@ -30,6 +30,7 @@ const DEFAULT_CONFIG: FuzzConfig = {
   timeout_ms: 7000,
   follow_redirects: false,
   delay_ms: 0,
+  rate_per_minute: 0,
 };
 
 const DEFAULT_FILTERS: FilterConfig = {
@@ -55,6 +56,7 @@ function toRunnableConfig(c: FuzzConfig): FuzzConfig {
     concurrency: clampInt(c.concurrency, 1, 500, DEFAULT_CONFIG.concurrency),
     timeout_ms: c.timeout_ms > 0 ? clampInt(c.timeout_ms, 100, 600_000, DEFAULT_CONFIG.timeout_ms) : DEFAULT_CONFIG.timeout_ms,
     delay_ms: clampInt(c.delay_ms, 0, 600_000, 0),
+    rate_per_minute: clampInt(c.rate_per_minute, 0, 1_000_000, 0),
   };
 }
 

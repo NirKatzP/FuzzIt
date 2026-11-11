@@ -78,6 +78,17 @@ export function TargetPanel({
         </label>
       </div>
 
+      <label className="field">
+        <span>בקשות לדקה (0 = ללא הגבלה)</span>
+        <input
+          type="number"
+          min={0}
+          value={config.rate_per_minute}
+          disabled={disabled}
+          onChange={(e) => onChange({ ...config, rate_per_minute: Number(e.target.value) })}
+        />
+      </label>
+
       <label className="field field--row">
         <input
           type="checkbox"

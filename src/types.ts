@@ -19,6 +19,8 @@ export interface FuzzConfig {
   timeout_ms: number;
   follow_redirects: boolean;
   delay_ms: number;
+  /** Requests per minute for the whole run. 0 = no limit. */
+  rate_per_minute: number;
 }
 
 export interface FilterConfig {
@@ -45,6 +47,8 @@ export interface FuzzProgress {
   total: number;
   matches: number;
   rps: number;
+  /** Responses with status 429 (Too Many Requests), counted before filtering. */
+  rate_limited: number;
 }
 
 // Matches the Rust enum's #[serde(tag = "kind", content = "value")] shape.
