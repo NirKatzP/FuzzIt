@@ -238,9 +238,19 @@ input[type="radio"] {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.results-notice {
+  margin-bottom: 8px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--text-secondary);
+}
 .results-table {
   width: 100%;
-  border-collapse: collapse;
+  /* Fixed layout and separate borders keep every row exactly ROW_HEIGHT
+     (ResultsTable.tsx), and stop columns shifting as rows scroll in and out. */
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 12px;
 }
 .results-table th {
@@ -254,8 +264,20 @@ input[type="radio"] {
   border-bottom: 1px solid var(--border);
 }
 .results-table td {
-  padding: 6px 10px;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.results-table td.results-table__spacer {
+  padding: 0;
+  border: 0;
+}
+.result-details__error {
+  color: var(--status-server);
 }
 .results-table tbody tr:hover {
   background: var(--bg-surface);

@@ -3,6 +3,10 @@ import type { WordlistSource } from "../types";
 const BUNDLED: { id: string; label: string }[] = [
   { id: "common-small", label: "נתיבים נפוצים (~150 מילים)" },
   { id: "api-small", label: "נקודות קצה API (~95 מילים)" },
+  { id: "api-medium", label: "נקודות קצה API, מורחב (~520 מילים)" },
+  { id: "raft-medium-files", label: "קבצים, raft-medium (~17K מילים)" },
+  { id: "raft-medium-directories", label: "תיקיות, raft-medium (~30K מילים)" },
+  { id: "directory-list-medium", label: "תיקיות, DirBuster medium (~220K מילים)" },
 ];
 
 export function WordlistPanel({

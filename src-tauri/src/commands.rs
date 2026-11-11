@@ -62,7 +62,7 @@ pub async fn start_fuzz(
         }
     }
 
-    let app_for_result = app.clone();
+    let app_for_results = app.clone();
     let app_for_progress = app.clone();
 
     let run_outcome = run_fuzz(
@@ -70,10 +70,10 @@ pub async fn start_fuzz(
         args.filters,
         words,
         handle.clone(),
-        move |result: FuzzResult| {
+        move |results: Vec<FuzzResult>| {
             // Errors here just mean the frontend window went away; the
             // fuzz run itself shouldn't fail because of it.
-            let _ = app_for_result.emit("fuzz://result", result);
+            let _ = app_for_results.emit("fuzz://results", results);
         },
         move |progress: FuzzProgress| {
             let _ = app_for_progress.emit("fuzz://progress", progress);

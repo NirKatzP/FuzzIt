@@ -17,6 +17,10 @@ import {
   type WordlistSource,
 } from "./types";
 
+// Past this many rows the filters clearly aren't separating anything, and
+// holding more would only eat memory on a long scan. The scan itself goes on.
+const MAX_RESULTS = 100_000;
+
 const DEFAULT_CONFIG: FuzzConfig = {
   url: "https://example.com/FUZZ",
   method: "GET",
@@ -61,20 +65,24 @@ export default function App() {
     kind: "Bundled",
     value: "common-small",
   });
-  const [results, setResults] = useState<FuzzResult[]>([]);
+  const [resultCount, setResultCount] = useState(0);
   const [progress, setProgress] = useState<FuzzProgress | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Results stream in one event at a time; a ref avoids a stale closure
-  // over `results` inside the event listener while still driving a single
-  // state update per event for React to render.
+  // Results stream in as batches. They're appended in place, since copying
+  // the whole array per batch gets expensive on a long scan; `resultCount` is
+  // the state update that tells React there's more to render.
   const resultsRef = useRef<FuzzResult[]>([]);
 
   useEffect(() => {
-    const unlistenResult = listen<FuzzResult>("fuzz://result", (e) => {
-      resultsRef.current = [...resultsRef.current, e.payload];
-      setResults(resultsRef.current);
+    const unlistenResults = listen<FuzzResult[]>("fuzz://results", (e) => {
+      const results = resultsRef.current;
+      const room = MAX_RESULTS - results.length;
+      for (const result of e.payload.slice(0, room)) {
+        results.push(result);
+      }
+      setResultCount(results.length);
     });
     const unlistenProgress = listen<FuzzProgress>("fuzz://progress", (e) => {
       setProgress(e.payload);
@@ -83,7 +91,7 @@ export default function App() {
       setRunning(false);
     });
     return () => {
-      unlistenResult.then((f) => f());
+      unlistenResults.then((f) => f());
       unlistenProgress.then((f) => f());
       unlistenComplete.then((f) => f());
     };
@@ -91,7 +99,7 @@ export default function App() {
 
   async function handleStart() {
     resultsRef.current = [];
-    setResults([]);
+    setResultCount(0);
     setProgress(null);
     setError(null);
     setRunning(true);
@@ -149,7 +157,7 @@ export default function App() {
         </aside>
         <main className="app-main">
           <RunControls running={running} progress={progress} error={error} onStart={handleStart} onStop={handleStop} />
-          <ResultsTable results={results} />
+          <ResultsTable results={resultsRef.current} count={resultCount} totalMatches={progress?.matches ?? 0} />
         </main>
       </div>
     </div>
