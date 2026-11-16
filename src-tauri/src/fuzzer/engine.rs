@@ -1,10 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, watch, Semaphore};
 
 use super::filters::FilterConfig;
 use super::request::{build_request, FuzzConfig};
@@ -38,27 +37,34 @@ pub struct FuzzProgress {
 const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Lets a Tauri command ("Stop" button) reach a run that's already in
-/// flight. A plain `Arc<AtomicBool>` rather than a global/static: each run
-/// gets its own handle, so there's nothing to reset between runs and no
-/// unsafe global state.
+/// flight. A per-run handle rather than a global/static: each run gets its
+/// own, so there's nothing to reset between runs and no unsafe global state.
+/// A `watch` channel rather than a bare flag, so work in progress can await
+/// cancellation (`cancelled()`) instead of only checking it between steps.
 #[derive(Clone)]
 pub struct FuzzHandle {
-    cancelled: Arc<AtomicBool>,
+    cancelled: Arc<watch::Sender<bool>>,
 }
 
 impl FuzzHandle {
     pub fn new() -> Self {
         Self {
-            cancelled: Arc::new(AtomicBool::new(false)),
+            cancelled: Arc::new(watch::Sender::new(false)),
         }
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancelled.send_replace(true);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        *self.cancelled.borrow()
+    }
+
+    /// Resolves once the run is cancelled (at once if it already is).
+    pub async fn cancelled(&self) {
+        // Can't fail: `self` holds the sender, so the channel stays open.
+        let _ = self.cancelled.subscribe().wait_for(|&c| c).await;
     }
 
     /// True if both handles belong to the same run (clones share the flag).
@@ -155,70 +161,23 @@ where
 
                 tokio::spawn(async move {
                     let _permit = permit; // released when this task ends, freeing a slot
-                    if handle.is_cancelled() {
-                        return;
-                    }
 
-                    let built = build_request(&config, &word);
-                    let req_start = Instant::now();
-
-                    let mut req = client.request(method.clone(), built.url.as_str());
-                    for (k, v) in &built.headers {
-                        req = req.header(k.as_str(), v.as_str());
-                    }
-                    if let Some(body) = built.body.clone() {
-                        req = req.body(body);
-                    }
-
-                    let result = match req.send().await {
-                        Ok(mut resp) => {
-                            let status = resp.status().as_u16();
-                            // Streamed chunk by chunk rather than `bytes()`: a hostile
-                            // server can send an endless body, and buffering it whole
-                            // would exhaust memory. Only the counters are kept, so the
-                            // full size is still reported, however large. The client
-                            // timeout still bounds how long one body can take.
-                            let mut stats = BodyStats::default();
-                            let mut error = None;
-                            loop {
-                                match resp.chunk().await {
-                                    Ok(Some(chunk)) => stats.feed(&chunk),
-                                    Ok(None) => break,
-                                    Err(e) => {
-                                        error = Some(describe_error(&e, config.timeout_ms));
-                                        break;
-                                    }
-                                }
-                            }
-                            stats.finish();
-                            FuzzResult {
-                                word: word.clone(),
-                                url: built.url.clone(),
-                                status,
-                                size: stats.size,
-                                words: stats.words,
-                                lines: stats.lines(),
-                                duration_ms: req_start.elapsed().as_millis() as u64,
-                                error,
-                            }
+                    // Raced against Stop: a request that a slow or hostile
+                    // target holds open is dropped, closing its connection,
+                    // instead of running on until the timeout. A cancelled
+                    // request reports nothing.
+                    tokio::select! {
+                        result = send_one(&client, method, &config, &word) => {
+                            let _ = tx.send(result).await;
                         }
-                        Err(e) => FuzzResult {
-                            word: word.clone(),
-                            url: built.url.clone(),
-                            status: 0,
-                            size: 0,
-                            words: 0,
-                            lines: 0,
-                            duration_ms: req_start.elapsed().as_millis() as u64,
-                            error: Some(describe_error(&e, config.timeout_ms)),
-                        },
-                    };
-
-                    let _ = tx.send(result).await;
+                        _ = handle.cancelled() => return,
+                    }
 
                     if config.delay_ms > 0 {
-                        tokio::time::sleep(std::time::Duration::from_millis(config.delay_ms))
-                            .await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_millis(config.delay_ms)) => {}
+                            _ = handle.cancelled() => {}
+                        }
                     }
                 });
             }
@@ -278,20 +237,73 @@ where
     Ok(())
 }
 
-/// Sleeps until `deadline`, waking regularly so Stop takes effect promptly
-/// even when a low rate puts the next request a minute away. Returns false
-/// if the run was cancelled while waiting.
+/// Sends one request and reads its response into a `FuzzResult`. Failures
+/// become a result with `error` set rather than an `Err`, since a failed
+/// request is still a row the user should see.
+async fn send_one(client: &Client, method: Method, config: &FuzzConfig, word: &str) -> FuzzResult {
+    let built = build_request(config, word);
+    let req_start = Instant::now();
+
+    let mut req = client.request(method, built.url.as_str());
+    for (k, v) in &built.headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    if let Some(body) = built.body {
+        req = req.body(body);
+    }
+
+    match req.send().await {
+        Ok(mut resp) => {
+            let status = resp.status().as_u16();
+            // Streamed chunk by chunk rather than `bytes()`: a hostile
+            // server can send an endless body, and buffering it whole
+            // would exhaust memory. Only the counters are kept, so the
+            // full size is still reported, however large. The client
+            // timeout still bounds how long one body can take.
+            let mut stats = BodyStats::default();
+            let mut error = None;
+            loop {
+                match resp.chunk().await {
+                    Ok(Some(chunk)) => stats.feed(&chunk),
+                    Ok(None) => break,
+                    Err(e) => {
+                        error = Some(describe_error(&e, config.timeout_ms));
+                        break;
+                    }
+                }
+            }
+            stats.finish();
+            FuzzResult {
+                word: word.to_string(),
+                url: built.url,
+                status,
+                size: stats.size,
+                words: stats.words,
+                lines: stats.lines(),
+                duration_ms: req_start.elapsed().as_millis() as u64,
+                error,
+            }
+        }
+        Err(e) => FuzzResult {
+            word: word.to_string(),
+            url: built.url,
+            status: 0,
+            size: 0,
+            words: 0,
+            lines: 0,
+            duration_ms: req_start.elapsed().as_millis() as u64,
+            error: Some(describe_error(&e, config.timeout_ms)),
+        },
+    }
+}
+
+/// Sleeps until `deadline`, returning early (with false) if the run is
+/// cancelled, so Stop takes effect at once even when a low rate puts the
+/// next request a minute away.
 async fn wait_until(deadline: Instant, handle: &FuzzHandle) -> bool {
-    const CHECK_EVERY: Duration = Duration::from_millis(100);
-    loop {
-        if handle.is_cancelled() {
-            return false;
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            return true;
-        }
-        tokio::time::sleep((deadline - now).min(CHECK_EVERY)).await;
+    tokio::select! {
+        _ = tokio::time::sleep_until(deadline.into()) => true,
+        _ = handle.cancelled() => false,
     }
 }
 
@@ -434,8 +446,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// Answers every request with a small 200, holding back any path that
-    /// contains "slow" for 800ms and answering 429 to any containing
-    /// "limited". Returns the server's base URL.
+    /// contains "slow" for 800ms (and "hang" for 30s, like a tarpit) and
+    /// answering 429 to any containing "limited". Returns the server's base URL.
     fn spawn_server() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -448,6 +460,9 @@ mod tests {
                     let request = String::from_utf8_lossy(&buf[..n]);
                     if request.contains("slow") {
                         std::thread::sleep(Duration::from_millis(800));
+                    }
+                    if request.contains("hang") {
+                        std::thread::sleep(Duration::from_secs(30));
                     }
                     let status = if request.contains("limited") {
                         "429 Too Many Requests"
@@ -572,6 +587,25 @@ mod tests {
 
         assert!(start.elapsed() < Duration::from_secs(2), "{:?}", start.elapsed());
         assert_eq!(progress.last().unwrap().done, 1);
+    }
+
+    #[tokio::test]
+    async fn stop_aborts_requests_already_in_flight() {
+        let url = spawn_server();
+        let handle = FuzzHandle::new();
+        let stopper = handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stopper.cancel();
+        });
+        // Every request hangs for 30s, well past Stop and the 5s timeout.
+        let words: Vec<String> = (0..5).map(|i| format!("hang{i}")).collect();
+        let start = Instant::now();
+        let (batches, progress) = scan(&url, words, 0, handle).await;
+
+        assert!(start.elapsed() < Duration::from_millis(1500), "{:?}", start.elapsed());
+        assert!(batches.is_empty(), "{batches:?}");
+        assert!(progress.iter().all(|p| p.done == 0), "cancelled requests reported");
     }
 
     #[tokio::test]
