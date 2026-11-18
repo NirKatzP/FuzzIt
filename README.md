@@ -1,152 +1,162 @@
 # FuzzIt
 
-A lightweight Windows GUI fuzzer inspired by [ffuf](https://github.com/ffuf/ffuf) —
-with its own self-contained fuzzing engine (no dependency on the `ffuf.exe`
-binary), a small footprint, and wordlists you load into the app.
+A lightweight Windows desktop fuzzer for web content discovery, inspired by
+[ffuf](https://github.com/ffuf/ffuf). The fuzzing engine is written from
+scratch in Rust. The UI is a React + TypeScript app running in a Tauri
+window. There's no dependency on `ffuf.exe` or any other external binary.
 
-## Why this stack (and not something else)
+![FuzzIt scanning a local test server](docs/screenshot.png)
 
-**Tauri (Rust backend + React/TS webview) instead of Electron, WinUI/WPF, or
-a Python GUI.**
-Tauri renders through the OS's own WebView2 on Windows instead of shipping a
-bundled Chromium like Electron does, so the installed app is tens of MB
-instead of hundreds. The backend is a real native Rust binary, not an
-interpreted runtime, so the fuzzing engine itself runs at native speed. You
-still get a modern, easily-styled UI via web tech, which is the "innovative
-but light" combination the brief asked for — C#/WinUI gets you native
-Windows chrome but a slower, more verbose path to a distinctive UI; a Python
-GUI (PySide6) is the fastest to prototype but produces the heaviest
-single-file executable of the three.
+> [!WARNING]
+> **Authorized use only.** FuzzIt sends large numbers of HTTP requests to
+> whatever target you give it. Only scan systems you own, or systems you have
+> explicit written permission to test (for example, an agreed penetration
+> testing scope or a bug bounty program that allows automated scanning).
+> Scanning anything else may be illegal where you live, and can disrupt the
+> service you're scanning. You are responsible for how you use this tool.
 
-**The fuzzing logic is implemented in the app, not shelled out to ffuf.exe.**
-This was the one hard requirement: the app owns the HTTP loop, concurrency,
-and filtering itself (`src-tauri/src/fuzzer/`). That means one less external
-binary to bundle, trust, or keep in sync, and the async engine can be built
-to match exactly how the UI wants to consume results — streamed live,
-rather than parsed back out of a subprocess's stdout.
+## Features
 
-**One substitution mechanism covers directory, parameter, and vhost
-fuzzing.** `fuzzer::request::build_request` replaces the `FUZZ` keyword
-everywhere it appears — URL, header values, body — in a single pass. Put
-`FUZZ` in the URL path and you get directory/file fuzzing; put it in the
-`Host` header and you get vhost fuzzing; put it in the body or a header
-value and you get parameter fuzzing. It's the same mechanism ffuf itself
-uses, so there's no separate "mode" to pick in the UI — just where you type
-`FUZZ`.
+- **One `FUZZ` keyword, several kinds of fuzzing.** FuzzIt substitutes the
+  keyword everywhere it appears in the request:
+  - URL path: directory and file discovery.
+  - Header value (e.g. `Host`): virtual host discovery.
+  - Request body: parameter fuzzing.
+- **Bundled wordlists**, compiled into the binary so the app works out of the
+  box, from a ~150-word starter list up to the ~220K-word DirBuster medium
+  list. You can also load your own list from disk.
+- **Filters** on status code, response size, word count and line count, so
+  wildcard or catch-all responses can be filtered out.
+- **Rate limiting** in requests per minute, applied across the whole scan
+  whatever the concurrency, plus a live count of `429 Too Many Requests`
+  responses so you know when to slow down.
+- **Readable errors.** A failed request says why: timeout, refused
+  connection, TLS failure and so on, not just "error".
+- **Built to handle hostile targets:**
+  - Response bodies are streamed and counted, never buffered whole, so an
+    endless body can't exhaust memory.
+  - Stop aborts requests that are already in flight, so a tarpit can't hold
+    connections open after you stop.
+  - The results table is virtualized and stays responsive at 100,000 rows.
+- **Small footprint.** Tauri uses the WebView2 runtime that ships with
+  Windows instead of bundling Chromium.
 
-**Concurrency: one Tokio task per word, gated by a `Semaphore`.** This is
-the direct equivalent of ffuf's `-t` flag. Results come back over a bounded
-`mpsc` channel that's drained concurrently with the producer (not after
-it), so the engine never buffers a whole run in memory — it can handle
-wordlists far larger than what's comfortable to hold as one `Vec` of
-results, and the UI's results table fills in live, request by request.
+## Getting started
 
-**reqwest with `rustls-tls`, not the platform TLS stack.** Avoids requiring
-OpenSSL headers/libraries to build on Windows, which is one of the more
-common sources of "works on my machine" build failures for Rust networking
-projects. Keeps the build self-contained.
+### Prerequisites
 
-**Two small wordlists are compiled into the binary; everything else is
-loaded from disk at runtime.** `include_str!` embeds `common-small.txt`
-(~150 words) and `api-small.txt` (~95 words) directly, so the app is usable
-the moment it's installed, with zero setup. Larger or custom lists — which
-was explicitly part of the brief — are read from disk via a native file
-picker (`tauri-plugin-dialog`) instead, which is what keeps the compiled
-binary itself small.
+On the Windows machine you build on:
 
-**UI language is Hebrew; layout direction is LTR, not mirrored RTL.** The
-content this tool is built around — URLs, headers, hex, status codes,
-response sizes — is inherently left-to-right technical data. Mirroring the
-whole shell into RTL would hurt scanability of the results table precisely
-where speed of scanning matters most. This mirrors how most Hebrew-market
-developer tooling behaves: Hebrew labels, LTR data and layout.
+1. [Rust](https://rustup.rs) (stable)
+2. [Node.js](https://nodejs.org) 18 or newer, with npm
+3. Tauri's Windows prerequisites: the WebView2 runtime (preinstalled on
+   current Windows 10/11) and the "Desktop development with C++" workload
+   from the Visual Studio Build Tools. See the
+   [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/).
 
-**Visual design.** Dark navy-ink base (`#0E1621`) with a warm copper accent
-(`#E8954A`), rather than either of the two generic looks AI-generated tools
-tend to default to (near-black with a neon-green "hacker" accent, or warm
-cream with a terracotta accent). Status codes are color-coded because that
-color is *information* (response class), not decoration — scanning a
-results table by color is exactly what a fuzzer's output is for.
-Typography pairs **Space Grotesk** (UI chrome, headings) with **JetBrains
-Mono** (the results table, URLs, status codes) — the monospace choice is
-functional, not aesthetic: tabular figures keep columns of sizes and status
-codes aligned and scannable, and avoid 0/O and 1/l ambiguity in paths.
+### Run
 
-## Project structure
+```sh
+git clone https://github.com/NirKatzP/FuzzIt.git
+cd FuzzIt
+npm install
+npm run tauri dev
+```
+
+> On PowerShell, if `npm` is blocked by the execution policy, use `npm.cmd`
+> instead (for example `npm.cmd run tauri dev`).
+
+### Build an installer
+
+```sh
+npm run tauri build
+```
+
+This produces `.msi` and NSIS installers under
+`src-tauri/target/release/bundle/`.
+
+### Tests
+
+```sh
+cd src-tauri
+cargo test
+```
+
+The engine tests run against throwaway HTTP servers on `127.0.0.1`. They
+cover batching, rate limiting, Stop behavior, 429 counting, error messages,
+and streamed body counting.
+
+## Usage
+
+1. Enter a target URL and put `FUZZ` where each word should go, for example
+   `https://target.example/FUZZ`.
+2. Pick a wordlist, or import one from disk.
+3. Set the filters. By default, `404` responses are hidden.
+4. Optionally set concurrency, a timeout, and a requests-per-minute limit
+   (`0` means no limit).
+5. Click Start. Results stream into the table as they arrive.
+
+**Start with `GET`.** Methods like `POST`, `PUT`, `PATCH` and `DELETE` can
+create, change or delete data on the target, once for every word in the list.
+Only use them against systems where that is explicitly allowed.
+
+The UI is in Hebrew. The layout stays left-to-right, because the data it
+shows (URLs, status codes, sizes) is left-to-right.
+
+## How it works
+
+| Area | Approach |
+|---|---|
+| Stack | Tauri 2: a native Rust backend plus a React/TypeScript UI in the system WebView2 |
+| HTTP | `reqwest` with `rustls`, so there's no OpenSSL to install on Windows |
+| Concurrency | One Tokio task per word, gated by a semaphore (the equivalent of ffuf's `-t`) |
+| Rate limiting | A single pacing point where requests start, so the limit holds for the whole scan |
+| Cancellation | Each request races a `watch`-channel cancel signal, so Stop drops it immediately |
+| Streaming to the UI | Results are batched into at most 10 IPC events per second |
+| Results table | Only visible rows are rendered, with a cap of 100,000 rows |
+| Webview hardening | A strict Content Security Policy, and no network access from the frontend |
 
 ```
 FuzzIt/
-├── src-tauri/                  Rust backend
-│   ├── capabilities/           Tauri v2 permissions (events, file dialog)
-│   ├── icons/                  App icons (placeholder — regenerate, see below)
+├── src-tauri/                Rust backend
 │   ├── src/
-│   │   ├── main.rs             App entry point, Tauri wiring
-│   │   ├── commands.rs         start_fuzz / stop_fuzz / list_bundled_wordlists
+│   │   ├── main.rs           App entry point
+│   │   ├── commands.rs       Tauri commands: start_fuzz, stop_fuzz, ...
 │   │   ├── fuzzer/
-│   │   │   ├── engine.rs       The async fuzz loop (concurrency, streaming)
-│   │   │   ├── request.rs      FUZZ-keyword substitution
-│   │   │   ├── filters.rs      Status/size/words/lines include-exclude logic
-│   │   │   └── wordlist.rs     Bundled + on-disk wordlist loading
-│   │   └── wordlists/          The two bundled starter lists
-│   ├── Cargo.toml
+│   │   │   ├── engine.rs     Async fuzz loop: concurrency, pacing, cancellation
+│   │   │   ├── request.rs    FUZZ keyword substitution
+│   │   │   ├── filters.rs    Include/exclude filters
+│   │   │   └── wordlist.rs   Bundled and on-disk wordlists
+│   │   └── wordlists/        Bundled wordlists and their licenses
+│   ├── capabilities/         Tauri permissions
 │   └── tauri.conf.json
-├── src/                        React frontend
-│   ├── App.tsx                 State + wiring to Tauri commands/events
-│   ├── components/              TargetPanel, WordlistPanel, FiltersPanel,
-│   │                             ResultsTable, RunControls, StatusBadge
-│   ├── styles/globals.css      Design tokens (color, type, layout)
-│   └── types.ts                 TS mirrors of the Rust structs
-└── package.json
+└── src/                      React frontend
+    ├── App.tsx               State and wiring to Tauri commands and events
+    ├── components/           Target, wordlist, filter panels and results table
+    └── styles/globals.css
 ```
 
-## Building it
+## Roadmap
 
-You'll need, on the Windows machine you build on:
+- Export results to CSV/JSON
+- A response preview pane for triaging hits
+- Pause and resume
+- A redirect policy that blocks redirects from public hosts to private or
+  loopback addresses
 
-1. **Rust** (stable) — https://rustup.rs
-2. **Node.js** 18+ and npm
-3. **Tauri's Windows prerequisites** — the WebView2 runtime (pre-installed
-   on current Windows 10/11) and the "Desktop development with C++"
-   workload from the Visual Studio Build Tools. Full list:
-   https://v2.tauri.app/start/prerequisites/
+## Fonts
 
-Then, from the project root:
+The UI is designed for [Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk)
+and [JetBrains Mono](https://www.jetbrains.com/lp/mono/), both under the SIL
+Open Font License. They aren't bundled. To use them, put the variable `.woff2`
+files in `src/assets/fonts/` under the filenames referenced in
+`src/styles/globals.css`. Without them, the app falls back to Segoe UI and
+Consolas.
 
-```sh
-npm install
-npm run tauri dev       # run it in development, with hot reload
-npm run tauri build     # produce a release .msi / NSIS installer
-```
+## License
 
-`src-tauri/icons/` only holds a generated placeholder (Windows builds,
-including `tauri dev`, fail without an `icon.ico`). Replace it with a real
-icon set before a release build:
+FuzzIt is released under the [MIT License](LICENSE).
 
-```sh
-npm run tauri icon path/to/a-1024x1024-source-image.png
-```
-
-### Fonts
-
-The two typefaces referenced in `globals.css` aren't bundled in this
-scaffold (no network access was available while generating it). Both are
-open-source (SIL OFL) — download the variable `.woff2` builds of
-[Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk) and
-[JetBrains Mono](https://www.jetbrains.com/lp/mono/) and drop them into
-`src/assets/fonts/` using the filenames already referenced in
-`globals.css`. Until then the app falls back to Segoe UI / Consolas, so
-it's fully usable either way.
-
-## Known MVP limits / natural next steps
-
-- **Export.** The results table has no Export button wired up yet —
-  straightforward to add (serialize `FuzzResult[]` to CSV/JSON client-side).
-- **Very large wordlists.** `wordlist::load_from_file` reads the whole file
-  into memory. Fine up into the low millions of lines; a streaming reader
-  would be the next step for anything bigger.
-- **No response preview.** Clicking a result row doesn't yet show the full
-  response body/headers — useful for triaging hits, not implemented yet.
-- **Stop vs. pause.** "Stop" cancels scheduling of new requests but lets
-  in-flight ones finish naturally; there's no pause/resume.
-- **Single theme.** Only the dark palette above exists; no light-mode
-  toggle yet.
+The bundled wordlists are third-party content under their own licenses: MIT
+for the SecLists lists, and CC BY-SA 3.0 for the DirBuster list. See
+[THIRD_PARTY_NOTICES.md](src-tauri/src/wordlists/THIRD_PARTY_NOTICES.md).

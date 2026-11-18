@@ -3,6 +3,7 @@ name = "fuzzit"
 version = "0.1.0"
 edition = "2021"
 description = "Lightweight Windows fuzzer with a self-contained engine, inspired by ffuf."
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
